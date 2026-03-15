@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  BarChart,Bar,XAxis,
-  YAxis,Tooltip,ResponsiveContainer,Cell,Legend
+  BarChart, Bar, XAxis,
+  YAxis, Tooltip, ResponsiveContainer, Cell, Legend
 } from "recharts";
 
 const THEMES = {
@@ -12,6 +12,22 @@ const THEMES = {
   surprise: { label: "Surprise", emoji: "😲", bgIcon: "⚡", c1: "#e9d5ff", c2: "#c084fc", accent: "#7e22ce", messages: ["Novelty detected! Your brain is in a state of rapid learning.", "The unexpected is just uncategorized data.", "Shock is the first step toward discovery."] },
   fear: { label: "Fear", emoji: "😨", bgIcon: "👻", c1: "#e2e8f0", c2: "#64748b", accent: "#1e293b", messages: ["Your system is in alert mode. Focus on what you can control.", "Bravery is the choice to move forward anyway.", "Ground yourself: Name five things you see."] },
   neutral: { label: "Neutral", emoji: "😐", bgIcon: "☁️", c1: "#f1f5f9", c2: "#e2e8f0", accent: "#475569", messages: ["Optimal baseline reached. Ideal for deep work.", "Stability is a superpower.", "Maintain equilibrium for exponential results."] }
+};
+
+const sanitizeInput = (text) => {
+
+  if (!text) return "";
+
+  let cleaned = text;
+
+  cleaned = cleaned.normalize("NFKC");
+  cleaned = cleaned.replace(/<[^>]*>/g, "");
+  cleaned = cleaned.replace(/javascript:/gi, "");
+  cleaned = cleaned.replace(/on\w+\s*=/gi, "");
+  cleaned = cleaned.replace(/[\u0000-\u001F\u007F]/g, "");
+  cleaned = cleaned.replace(/ \t+/g, " ");
+
+  return cleaned;
 };
 
 export default function App() {
@@ -28,6 +44,7 @@ export default function App() {
   };
 
   const addCard = () => {
+
     setCards([
       { id: Date.now(), text: "", emotion: "neutral", isAnalyzing: false, message: "", breakdown: [] },
       ...cards
@@ -36,84 +53,117 @@ export default function App() {
 
   const handleInput = (id, text) => {
 
+  // store raw text (no sanitization here)
+  setCards(prev =>
+    prev.map(c =>
+      c.id === id
+        ? { ...c, text: text }
+        : c
+    )
+  );
+
+  // reset emotion if cleared
+  if (text.trim().length === 0) {
     setCards(prev =>
       prev.map(c =>
         c.id === id
-          ? { ...c, text, emotion: "neutral", message: "", isAnalyzing: false, breakdown: [] }
+          ? { ...c, emotion: "neutral", message: "", breakdown: [] }
           : c
       )
     );
+    return;
+  }
 
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+  if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
-    const hasPunctuation = /[.!?]$/.test(text.trim());
+  const hasPunctuation = /[.!?]$/.test(text.trim());
 
-    if (hasPunctuation && text.trim().length > 3) {
+  if (hasPunctuation && text.trim().length > 3) {
 
-      typingTimeoutRef.current = setTimeout(async () => {
+    typingTimeoutRef.current = setTimeout(async () => {
+
+      setCards(prev =>
+        prev.map(c =>
+          c.id === id ? { ...c, isAnalyzing: true } : c
+        )
+      );
+
+      try {
+
+        // sanitize ONLY before sending to backend
+        const safeText = sanitizeInput(text);
+
+        const response = await fetch("http://127.0.0.1:8000/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: safeText })
+        });
+
+        if (!response.ok) throw new Error("Backend error");
+
+        const data = await response.json();
+
+        let emotion = "neutral";
+        if (data && data.emotion) emotion = data.emotion.toLowerCase();
+        if (!THEMES[emotion]) emotion = "neutral";
+
+        const safeBreakdown = Array.isArray(data.breakdown) ? data.breakdown : [];
 
         setCards(prev =>
-          prev.map(c => c.id === id ? { ...c, isAnalyzing: true } : c)
+          prev.map(c =>
+            c.id === id
+              ? {
+                  ...c,
+                  emotion: emotion,
+                  isAnalyzing: false,
+                  message: getRandomMessage(emotion),
+                  breakdown: safeBreakdown
+                }
+              : c
+          )
         );
 
-        try {
+      } catch {
 
-          const response = await fetch("http://127.0.0.1:8000/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: text })
-          });
+        setCards(prev =>
+          prev.map(c =>
+            c.id === id
+              ? { ...c, emotion: "neutral", isAnalyzing: false }
+              : c
+          )
+        );
 
-          const data = await response.json();
-          const emotion = data.emotion.toLowerCase();
+      }
 
-          setCards(prev =>
-            prev.map(c =>
-              c.id === id
-                ? {
-                    ...c,
-                    emotion: emotion,
-                    isAnalyzing: false,
-                    message: getRandomMessage(emotion),
-                    breakdown: data.breakdown || []
-                  }
-                : c
-            )
-          );
-
-        } catch (err) {
-
-          setCards(prev =>
-            prev.map(c =>
-              c.id === id ? { ...c, isAnalyzing: false } : c
-            )
-          );
-
-        }
-
-      }, 400);
-    }
-  };
+    }, 400);
+  }
+};
 
   const current = THEMES[cards[0]?.emotion] || THEMES.neutral;
 
   useEffect(() => {
+
     document.documentElement.style.setProperty('--color-1', current.c1);
     document.documentElement.style.setProperty('--color-2', current.c2);
+
   }, [current]);
 
   return (
+
     <div className="vibe-mesh-app">
 
       <div className="mesh-bg" />
 
       <div className="floating-elements">
+
         <div className="float-icon" style={{ top: '10%', left: '5%' }}>
           {current.bgIcon}
         </div>
+
         <div className="float-icon" style={{ bottom: '15%', right: '5%', animationDelay: '-4s' }}>
           {current.bgIcon}
         </div>
+
       </div>
 
       <div className="dashboard-container" style={{ maxWidth: '950px', margin: '0 auto', padding: '80px 20px' }}>
@@ -178,32 +228,27 @@ export default function App() {
 
                         <ResponsiveContainer>
 
-                          <BarChart data={[...card.breakdown].sort((a,b)=>b.percentage-a.percentage)}>
+                          <BarChart data={[...card.breakdown].sort((a, b) => b.percentage - a.percentage)}>
 
                             <XAxis dataKey="label" hide />
-                            <YAxis hide domain={[0,100]} />
+                            <YAxis hide domain={[0, 100]} />
 
-                            <Tooltip
-                              formatter={(value)=>`${Math.round(value)}%`}
-                              contentStyle={{
-                                borderRadius:"10px",
-                                border:"none",
-                                fontSize:"12px"
-                              }}
-                            />
+                            <Tooltip formatter={(value) => `${Math.round(value)}%`} />
 
-                            <Legend verticalAlign="bottom" height={20}/>
+                            <Legend verticalAlign="bottom" height={20} />
 
-                            <Bar dataKey="percentage" radius={[6,6,0,0]} animationDuration={1200}>
+                            <Bar dataKey="percentage" radius={[6, 6, 0, 0]} animationDuration={1200}>
 
                               {[...card.breakdown]
-                                .sort((a,b)=>b.percentage-a.percentage)
-                                .map((entry,index)=>(
+                                .sort((a, b) => b.percentage - a.percentage)
+                                .map((entry, index) => (
+
                                   <Cell
-                                    key={`cell-${index}`}
+                                    key={index}
                                     fill={THEMES[entry.label]?.accent || "#8884d8"}
                                   />
-                              ))}
+
+                                ))}
 
                             </Bar>
 
@@ -213,28 +258,43 @@ export default function App() {
 
                       </div>
 
+                      {/* DISTRIBUTION BARS RESTORED */}
+
                       <p style={{ fontSize: '0.65rem', fontWeight: 900, marginTop: '12px', marginBottom: '12px', opacity: 0.5 }}>
                         Distributions
                       </p>
 
-                      {[...card.breakdown].sort((a,b)=>b.percentage-a.percentage).map((item)=>(
-                        <div key={item.label} style={{ marginBottom:'10px' }}>
+                      {card.breakdown.map((item) => (
 
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:'0.7rem', fontWeight:800, marginBottom:'4px' }}>
-                            <span style={{ textTransform:'capitalize' }}>{item.label}</span>
+                        <div key={item.label} style={{ marginBottom: '10px' }}>
+
+                          <div style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontSize: '0.7rem',
+                            fontWeight: 800,
+                            marginBottom: '4px'
+                          }}>
+                            <span style={{ textTransform: 'capitalize' }}>{item.label}</span>
                             <span>{Math.round(item.percentage)}%</span>
                           </div>
 
-                          <div style={{ background:'rgba(0,0,0,0.06)', height:'6px', borderRadius:'10px', overflow:'hidden' }}>
+                          <div style={{
+                            background: 'rgba(0,0,0,0.06)',
+                            height: '6px',
+                            borderRadius: '10px',
+                            overflow: 'hidden'
+                          }}>
                             <div style={{
-                              width:`${item.percentage}%`,
-                              height:'100%',
+                              width: `${item.percentage}%`,
+                              height: '100%',
                               background: THEMES[item.label]?.accent || theme.accent,
-                              transition:'width 1.2s'
+                              transition: 'width 1.2s'
                             }} />
                           </div>
 
                         </div>
+
                       ))}
 
                     </div>
@@ -244,7 +304,7 @@ export default function App() {
                 </div>
 
                 {card.message && !card.isAnalyzing && (
-                  <div style={{ borderLeft:`4px solid ${theme.accent}`, color:theme.accent, marginTop:'15px', padding:'10px' }}>
+                  <div style={{ borderLeft: `4px solid ${theme.accent}`, color: theme.accent, marginTop: '15px', padding: '10px' }}>
                     {card.message}
                   </div>
                 )}
@@ -256,6 +316,9 @@ export default function App() {
         </div>
 
       </div>
+
     </div>
+
   );
 }
+
