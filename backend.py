@@ -5,7 +5,7 @@ from transformers import pipeline
 import uvicorn
 import re
 
-app = FastAPI(title="Emotion Detection API", version="0.4.0")
+app = FastAPI(title="Emotion Detection API", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,8 +26,10 @@ try:
         model="./emotion_model",
         top_k=None
     )
-except:
-    print("Local model not found, loading fallback model...")
+    print("✅ Local emotion model loaded")
+
+except Exception:
+    print("⚠️ Local model not found, loading fallback model...")
     classifier = pipeline(
         "text-classification",
         model="bhadresh-savani/bert-base-uncased-emotion",
@@ -46,89 +48,135 @@ LABEL_MAP = {
 }
 
 
+# ---------------- CORE ANALYSIS ----------------
+
 def analyze_text(text):
 
-    results = classifier(text)
+    try:
 
-    if isinstance(results[0], list):
-        results = results[0]
+        if len(text) > 512:
+            text = text[:512]
 
-    breakdown = []
+        results = classifier(text)
 
-    for res in results:
-        label = LABEL_MAP.get(res["label"], res["label"])
+        if not results:
+            return [{"label": "neutral", "percentage": 100}]
 
-        breakdown.append({
-            "label": label,
-            "score": res["score"]
-        })
+        if isinstance(results[0], list):
+            results = results[0]
 
-    text_lower = text.lower()
+        breakdown = []
 
-    # --- small emotion boosts ---
-    if "love" in text_lower or "like" in text_lower or "adore" in text_lower:
+        for res in results:
+
+            label = LABEL_MAP.get(res["label"], res["label"])
+
+            breakdown.append({
+                "label": label,
+                "score": float(res["score"])
+            })
+
+        text_lower = text.lower()
+
+        # --- emotion boosts ---
+        if "love" in text_lower or "like" in text_lower or "adore" in text_lower:
+            for item in breakdown:
+                if item["label"] == "love":
+                    item["score"] += 0.15
+
+        if "happy" in text_lower or "excited" in text_lower:
+            for item in breakdown:
+                if item["label"] == "joy":
+                    item["score"] += 0.12
+
+        total = sum(item["score"] for item in breakdown)
+
+        if total == 0:
+            return [{"label": "neutral", "percentage": 100}]
+
         for item in breakdown:
-            if item["label"] == "love":
-                item["score"] += 0.15
+            item["percentage"] = round((item["score"] / total) * 100, 2)
+            del item["score"]
 
-    if "happy" in text_lower or "so much" in text_lower or "excited" in text_lower:
-        for item in breakdown:
-            if item["label"] == "joy":
-                item["score"] += 0.12
+        breakdown = sorted(breakdown, key=lambda x: x["percentage"], reverse=True)
 
-    # normalize
-    total = sum(item["score"] for item in breakdown)
+        return breakdown
 
-    for item in breakdown:
-        item["percentage"] = round((item["score"] / total) * 100, 2)
-        del item["score"]
+    except Exception:
+        return [{"label": "neutral", "percentage": 100}]
 
-    breakdown = sorted(breakdown, key=lambda x: x["percentage"], reverse=True)
 
-    return breakdown
+# ---------------- API ----------------
+
+@app.get("/")
+def home():
+    return {"status": "Emotion API running"}
 
 
 @app.post("/analyze")
 async def analyze_mood(request: MoodRequest):
 
     try:
+
         raw_text = request.text.strip()
 
         if raw_text == "":
             raise HTTPException(status_code=400, detail="Text cannot be empty")
 
-        # ---------- FULL TEXT ANALYSIS ----------
+        # ---------- FULL TEXT ----------
         breakdown = analyze_text(raw_text)
 
+        if not breakdown:
+            return {
+                "emotion": "neutral",
+                "secondary": None,
+                "breakdown": [],
+                "timeline": []
+            }
+
         top = breakdown[0]
-        second = breakdown[1]
+
+        second = breakdown[1] if len(breakdown) > 1 else None
 
         main_emotion = top["label"]
-        secondary_emotion = second["label"] if second["percentage"] > 20 else None
 
-        # ---------- TIMELINE ANALYSIS ----------
+        secondary_emotion = (
+            second["label"] if second and second["percentage"] > 20 else None
+        )
+
+        # ---------- TIMELINE ----------
         sentences = re.split(r'[.!?]+', raw_text)
         sentences = [s.strip() for s in sentences if s.strip()]
 
         timeline = []
 
         for sentence in sentences:
+
             result = analyze_text(sentence)
+
+            emotion = result[0]["label"] if result else "neutral"
 
             timeline.append({
                 "text": sentence,
-                "emotion": result[0]["label"]
+                "emotion": emotion
             })
 
         return {
-            "emotion": main_emotion,      # frontend will use this
+            "emotion": main_emotion,
             "secondary": secondary_emotion,
             "breakdown": breakdown,
             "timeline": timeline
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        return {
+            "emotion": "neutral",
+            "secondary": None,
+            "breakdown": [],
+            "timeline": [],
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":
